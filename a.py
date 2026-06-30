@@ -2,9 +2,8 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 import os
-from datetime import date
 
-# Uygulamanın olduğu klasörü otomatik bul
+# Ayarlar ve Veritabanı Yolu
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "lider_muhasebe_stabil.db")
 
@@ -43,7 +42,7 @@ def panel_dashboard():
 
 def panel_ogrenci():
     st.title("👥 Öğrenci İşlemleri")
-    tab1, tab2 = st.tabs(["Yeni Kayıt", "Liste / Borç"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Yeni Kayıt", "Liste / Borç", "Bilgi Düzenle", "Öğrenci Sil"])
     with tab1:
         with st.form("kayit"):
             ad = st.text_input("Ad Soyad")
@@ -61,10 +60,63 @@ def panel_ogrenci():
     with tab2:
         conn = get_conn()
         df = pd.read_sql_query("SELECT * FROM ogrenciler", conn)
-        conn.close()
         if not df.empty:
             df['Kalan Borç'] = df['toplam_ucret'] - df['odenen_ucret']
             st.dataframe(df, use_container_width=True)
+        conn.close()
+    with tab3:
+        conn = get_conn()
+        df = pd.read_sql_query("SELECT * FROM ogrenciler", conn)
+        if not df.empty:
+            secili = st.selectbox("Düzenlenecek Öğrenci", df['ad_soyad'].tolist(), key="duz")
+            data = df[df['ad_soyad'] == secili].iloc[0]
+            with st.form("duz_form"):
+                yeni_ad = st.text_input("Ad Soyad", value=data['ad_soyad'])
+                if st.form_submit_button("Güncelle"):
+                    cursor = conn.cursor()
+                    cursor.execute("UPDATE ogrenciler SET ad_soyad=? WHERE id=?", (yeni_ad, data['id']))
+                    conn.commit()
+                    st.rerun()
+        conn.close()
+    with tab4:
+        conn = get_conn()
+        df = pd.read_sql_query("SELECT * FROM ogrenciler", conn)
+        if not df.empty:
+            secili = st.selectbox("Silinecek Öğrenci", df['ad_soyad'].tolist(), key="sil")
+            if st.button("Öğrenciyi Sil"):
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM ogrenciler WHERE ad_soyad=?", (secili,))
+                conn.commit()
+                st.rerun()
+        conn.close()
+
+def panel_gider_yonetimi():
+    st.title("💸 Gider Yönetimi")
+    tab1, tab2 = st.tabs(["Gider Ekle", "Gider Sil"])
+    with tab1:
+        with st.form("gider_form"):
+            aciklama = st.text_input("Açıklama")
+            tutar = st.number_input("Tutar", step=50.0)
+            if st.form_submit_button("Kaydet"):
+                conn = get_conn()
+                cursor = conn.cursor()
+                cursor.execute("INSERT INTO kasa (tur, aciklama, tutar, tarih) VALUES ('Gider', ?, ?, date('now'))", (aciklama, tutar))
+                conn.commit()
+                conn.close()
+                st.rerun()
+    with tab2:
+        conn = get_conn()
+        df = pd.read_sql_query("SELECT * FROM kasa WHERE tur='Gider'", conn)
+        if not df.empty:
+            df['secenek'] = df['aciklama'] + " (" + df['tutar'].astype(str) + " ₺)"
+            secili_str = st.selectbox("Silinecek Gider", df['secenek'].tolist(), key="gider_sil")
+            if st.button("Seçili Gideri Sil"):
+                secili_id = df[df['secenek'] == secili_str]['id'].iloc[0]
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM kasa WHERE id=?", (int(secili_id),))
+                conn.commit()
+                st.rerun()
+        conn.close()
 
 def panel_tahsilat():
     st.title("💵 Taksit Tahsilatı")
@@ -74,48 +126,30 @@ def panel_tahsilat():
         ogrenci_dict = {f"{r['ad_soyad']} (Borç: {r['toplam_ucret']-r['odenen_ucret']:.2f})": r['id'] for _, r in df.iterrows()}
         secim = st.selectbox("Öğrenci Seçin", list(ogrenci_dict.keys()))
         tutar = st.number_input("Tutar", step=100.0)
-        tarih = st.date_input("Ödeme Tarihi")
         if st.button("Kasaya İşle"):
             cursor = conn.cursor()
             cursor.execute("UPDATE ogrenciler SET odenen_ucret = odenen_ucret + ? WHERE id = ?", (tutar, ogrenci_dict[secim]))
-            cursor.execute("INSERT INTO kasa (tur, aciklama, tutar, tarih) VALUES ('Gelir', ?, ?, ?)", (f"Tahsilat: {secim.split(' (')[0]}", tutar, str(tarih)))
+            cursor.execute("INSERT INTO kasa (tur, aciklama, tutar, tarih) VALUES ('Gelir', ?, ?, date('now'))", (f"Tahsilat: {secim.split(' (')[0]}", tutar))
             conn.commit()
-            conn.close()
             st.rerun()
     conn.close()
-
-def panel_gider():
-    st.title("💸 Gider Girişi")
-    with st.form("gider_formu"):
-        aciklama = st.text_input("Açıklama")
-        tutar = st.number_input("Tutar", step=50.0)
-        tarih = st.date_input("Tarih")
-        if st.form_submit_button("Gideri Kaydet"):
-            conn = get_conn()
-            cursor = conn.cursor()
-            cursor.execute("INSERT INTO kasa (tur, aciklama, tutar, tarih) VALUES ('Gider', ?, ?, ?)", (aciklama, tutar, str(tarih)))
-            conn.commit()
-            conn.close()
-            st.rerun()
 
 def panel_rapor():
-    st.title("📅 Aylık Finansal Özet")
+    st.title("📅 Aylık Finansal Analiz")
     conn = get_conn()
-    df_kasa = pd.read_sql_query("SELECT * FROM kasa", conn)
+    df = pd.read_sql_query("SELECT * FROM kasa", conn)
     conn.close()
-    if not df_kasa.empty:
-        df_kasa['tarih'] = pd.to_datetime(df_kasa['tarih'])
+    if not df.empty:
+        df['tarih'] = pd.to_datetime(df['tarih'])
         ay = st.selectbox("Ay Seçin", range(1, 13))
-        filtreli = df_kasa[df_kasa['tarih'].dt.month == ay]
-        gelir = filtreli[filtreli['tur']=='Gelir']['tutar'].sum()
-        gider = filtreli[filtreli['tur']=='Gider']['tutar'].sum()
-        st.metric("Net Kar", f"{gelir - gider:,.2f} ₺")
+        filtreli = df[df['tarih'].dt.month == ay]
         st.dataframe(filtreli, use_container_width=True)
+        st.metric("Bu Ayın Toplam İşlemi", f"{filtreli['tutar'].sum():,.2f} ₺")
 
-# Navigasyon
-menu = st.sidebar.radio("Menü", ["Genel Özet", "Öğrenci İşlemleri", "Taksit Tahsilatı", "Gider Ekle", "Aylık Finansal Özet"])
+# --- NAVİGASYON ---
+menu = st.sidebar.radio("Menü", ["Genel Özet", "Öğrenci İşlemleri", "Taksit Tahsilatı", "Gider Yönetimi", "Aylık Finansal Analiz"])
 if menu == "Genel Özet": panel_dashboard()
 elif menu == "Öğrenci İşlemleri": panel_ogrenci()
 elif menu == "Taksit Tahsilatı": panel_tahsilat()
-elif menu == "Gider Ekle": panel_gider()
-elif menu == "Aylık Finansal Özet": panel_rapor()
+elif menu == "Gider Yönetimi": panel_gider_yonetimi()
+elif menu == "Aylık Finansal Analiz": panel_rapor()
